@@ -12,7 +12,7 @@ from agno.models.openai import OpenAIChat
 from agno.db.sqlite import SqliteDb
 from agno.os import AgentOS
 from agno.tools.mcp import MCPTools
-from mcp import StdioServerParameters, SSEClientParams, StreamableHTTPClientParams
+from mcp import StdioServerParameters
 
 # Optional Claude import
 try:
@@ -121,17 +121,9 @@ app.add_middleware(
 # ----- MCP Tools Management -----
 async def load_mcp_tools(mcp_config: dict) -> MCPTools:
 	"""Load MCP tools based on configuration"""
-	transport = mcp_config.get('transport', 'streamable-http')
+	transport = mcp_config.get('transport', 'stdio')
 	
-	if transport == 'streamable-http':
-		server_params = StreamableHTTPClientParams(
-			url=mcp_config['url'],
-			headers=mcp_config.get('headers', {}),
-			timeout=mcp_config.get('timeout', 30)
-		)
-		return MCPTools(server_params=server_params, transport="streamable-http")
-	
-	elif transport == 'stdio':
+	if transport == 'stdio':
 		server_params = StdioServerParameters(
 			command=mcp_config['command'],
 			args=mcp_config.get('args', []),
@@ -139,13 +131,9 @@ async def load_mcp_tools(mcp_config: dict) -> MCPTools:
 		)
 		return MCPTools(server_params=server_params, transport="stdio")
 	
-	elif transport == 'sse':
-		server_params = SSEClientParams(
-			url=mcp_config['url'],
-			headers=mcp_config.get('headers', {}),
-			timeout=mcp_config.get('timeout', 30)
-		)
-		return MCPTools(server_params=server_params, transport="sse")
+	elif transport == 'streamable-http':
+		# For HTTP transport, use URL directly
+		return MCPTools(url=mcp_config['url'], transport="streamable-http")
 	
 	else:
 		raise ValueError(f"Unsupported transport: {transport}")
@@ -248,9 +236,9 @@ async def delete_mcp(mcp_id: int, db: Session = Depends(get_db)):
 @app.get("/scopex/tools/available")
 async def get_available_tools():
 	"""Get list of available tools from MCP servers"""
+	db = SessionLocal()
 	try:
 		# Get all enabled MCP servers
-		db = SessionLocal()
 		mcp_servers = db.query(MCPServer).filter(MCPServer.enabled == True).all()
 		
 		available_tools = []
@@ -285,12 +273,12 @@ async def get_available_tools():
 				
 			except Exception as e:
 				print(f"Failed to get tools from MCP server {mcp_server.name}: {e}")
-		finally:
-			db.close()
 		
 		return {"tools": available_tools}
 	except Exception as e:
 		raise HTTPException(status_code=500, detail=f"Failed to get available tools: {str(e)}")
+	finally:
+		db.close()
 
 
 class ToolIn(BaseModel):
