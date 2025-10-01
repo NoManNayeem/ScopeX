@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Send, Bot, User, Settings, Plus } from 'lucide-react'
+import { Send, Bot, User, Settings, Plus, ChevronDown, X } from 'lucide-react'
 import Link from 'next/link'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -13,13 +13,42 @@ interface Message {
   timestamp: Date
 }
 
+interface AvailableTool {
+  name: string
+  description: string
+  source: string
+}
+
+interface MCPServer {
+  id: number
+  name: string
+  transport: string
+  url?: string
+  command?: string
+  enabled: boolean
+}
+
+interface CustomTool {
+  id: number
+  name: string
+  type: string
+  config?: string
+  enabled: boolean
+}
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [selectedTools, setSelectedTools] = useState<string[]>([])
+  const [selectedMCPs, setSelectedMCPs] = useState<string[]>([])
+  const [availableTools, setAvailableTools] = useState<AvailableTool[]>([])
+  const [mcpServers, setMcpServers] = useState<MCPServer[]>([])
+  const [customTools, setCustomTools] = useState<CustomTool[]>([])
   const [sessionId, setSessionId] = useState<string>('')
   const [userId, setUserId] = useState<string>('')
+  const [showToolDropdown, setShowToolDropdown] = useState(false)
+  const [showMCPDropdown, setShowMCPDropdown] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
@@ -29,6 +58,43 @@ export default function ChatPage() {
   useEffect(() => {
     scrollToBottom()
   }, [messages])
+
+  // Load available tools and MCPs
+  const loadAvailableTools = async () => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/scopex/tools/available`)
+      if (response.ok) {
+        const data = await response.json()
+        setAvailableTools(data.tools || [])
+      }
+    } catch (error) {
+      console.error('Failed to load available tools:', error)
+    }
+  }
+
+  const loadMCPs = async () => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/scopex/mcps`)
+      if (response.ok) {
+        const mcps = await response.json()
+        setMcpServers(mcps || [])
+      }
+    } catch (error) {
+      console.error('Failed to load MCP servers:', error)
+    }
+  }
+
+  const loadCustomTools = async () => {
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/scopex/tools`)
+      if (response.ok) {
+        const tools = await response.json()
+        setCustomTools(tools || [])
+      }
+    } catch (error) {
+      console.error('Failed to load custom tools:', error)
+    }
+  }
 
   // Initialize session and load previous messages
   useEffect(() => {
@@ -64,6 +130,11 @@ export default function ChatPage() {
           console.error('Error loading saved messages:', error)
         }
       }
+
+      // Load available tools and MCPs
+      loadAvailableTools()
+      loadMCPs()
+      loadCustomTools()
     }
 
     initializeSession()
@@ -100,7 +171,9 @@ export default function ChatPage() {
           message: input,
           stream: 'true',
           user_id: userId,
-          session_id: sessionId
+          session_id: sessionId,
+          selected_tools: JSON.stringify(selectedTools),
+          selected_mcps: JSON.stringify(selectedMCPs)
         })
       })
 
@@ -187,6 +260,20 @@ export default function ChatPage() {
     }
   }
 
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      if (!target.closest('.tool-dropdown') && !target.closest('.mcp-dropdown')) {
+        setShowToolDropdown(false)
+        setShowMCPDropdown(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
   return (
     <div className="h-screen flex flex-col bg-gray-50">
       {/* Header */}
@@ -224,6 +311,133 @@ export default function ChatPage() {
           >
             <Settings className="h-5 w-5" />
           </Link>
+        </div>
+      </div>
+
+      {/* Tool Selection Bar */}
+      <div className="bg-white border-b border-gray-200 px-6 py-3">
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2">
+            <span className="text-sm font-medium text-gray-700">Tools:</span>
+            <div className="relative tool-dropdown">
+              <button
+                onClick={() => setShowToolDropdown(!showToolDropdown)}
+                className="flex items-center space-x-2 px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <span>Select Tools ({selectedTools.length})</span>
+                <ChevronDown className="h-4 w-4" />
+              </button>
+              
+              {showToolDropdown && (
+                <div className="absolute top-full left-0 mt-1 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-60 overflow-y-auto">
+                  <div className="p-2">
+                    <div className="text-xs font-medium text-gray-500 mb-2">Available Tools</div>
+                    {availableTools.map((tool) => (
+                      <label key={tool.name} className="flex items-start space-x-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedTools.includes(tool.name)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedTools([...selectedTools, tool.name])
+                            } else {
+                              setSelectedTools(selectedTools.filter(t => t !== tool.name))
+                            }
+                          }}
+                          className="mt-1"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-gray-900">{tool.name}</div>
+                          <div className="text-xs text-gray-500">{tool.description}</div>
+                          <div className="text-xs text-blue-600">{tool.source}</div>
+                        </div>
+                      </label>
+                    ))}
+                    {availableTools.length === 0 && (
+                      <div className="text-sm text-gray-500 p-2">No tools available</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <span className="text-sm font-medium text-gray-700">MCPs:</span>
+            <div className="relative mcp-dropdown">
+              <button
+                onClick={() => setShowMCPDropdown(!showMCPDropdown)}
+                className="flex items-center space-x-2 px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <span>Select MCPs ({selectedMCPs.length})</span>
+                <ChevronDown className="h-4 w-4" />
+              </button>
+              
+              {showMCPDropdown && (
+                <div className="absolute top-full left-0 mt-1 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-10 max-h-60 overflow-y-auto">
+                  <div className="p-2">
+                    <div className="text-xs font-medium text-gray-500 mb-2">MCP Servers</div>
+                    {mcpServers.filter(mcp => mcp.enabled).map((mcp) => (
+                      <label key={mcp.id} className="flex items-start space-x-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedMCPs.includes(mcp.name)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedMCPs([...selectedMCPs, mcp.name])
+                            } else {
+                              setSelectedMCPs(selectedMCPs.filter(t => t !== mcp.name))
+                            }
+                          }}
+                          className="mt-1"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-gray-900">{mcp.name}</div>
+                          <div className="text-xs text-gray-500">{mcp.transport}</div>
+                          {mcp.url && <div className="text-xs text-blue-600">{mcp.url}</div>}
+                          {mcp.command && <div className="text-xs text-green-600">{mcp.command}</div>}
+                        </div>
+                      </label>
+                    ))}
+                    {mcpServers.filter(mcp => mcp.enabled).length === 0 && (
+                      <div className="text-sm text-gray-500 p-2">No MCP servers available</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Selected Tools Display */}
+          {(selectedTools.length > 0 || selectedMCPs.length > 0) && (
+            <div className="flex items-center space-x-2">
+              <span className="text-sm text-gray-500">Active:</span>
+              <div className="flex flex-wrap gap-1">
+                {selectedTools.map((tool) => (
+                  <span key={tool} className="inline-flex items-center space-x-1 px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
+                    <span>{tool}</span>
+                    <button
+                      onClick={() => setSelectedTools(selectedTools.filter(t => t !== tool))}
+                      className="hover:text-blue-600"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+                {selectedMCPs.map((mcp) => (
+                  <span key={mcp} className="inline-flex items-center space-x-1 px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
+                    <span>{mcp}</span>
+                    <button
+                      onClick={() => setSelectedMCPs(selectedMCPs.filter(t => t !== mcp))}
+                      className="hover:text-green-600"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

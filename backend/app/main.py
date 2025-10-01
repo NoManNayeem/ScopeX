@@ -108,6 +108,13 @@ agent_os = AgentOS(
 
 app: FastAPI = agent_os.get_app()
 
+# Startup event to load MCP tools
+@app.on_event("startup")
+async def startup_event():
+	"""Load MCP tools when the application starts"""
+	print("Loading MCP tools at startup...")
+	await update_agent_tools()
+
 # CORS for frontend
 app.add_middleware(
 	CORSMiddleware,
@@ -140,9 +147,9 @@ async def load_mcp_tools(mcp_config: dict) -> MCPTools:
 
 async def update_agent_tools():
 	"""Update the agent with available MCP tools"""
-	# Get all enabled MCP servers
-	db = SessionLocal()
 	try:
+		# Get all enabled MCP servers
+		db = SessionLocal()
 		mcp_servers = db.query(MCPServer).filter(MCPServer.enabled == True).all()
 		
 		tools = []
@@ -162,13 +169,19 @@ async def update_agent_tools():
 					'headers': headers,
 					'timeout': mcp_server.timeout
 				})
+				
+				# Connect to MCP server
 				await mcp_tools.connect()
 				tools.append(mcp_tools)
+				print(f"Successfully loaded MCP server: {mcp_server.name}")
+				
 			except Exception as e:
 				print(f"Failed to load MCP server {mcp_server.name}: {e}")
 		
 		# Update the agent with new tools
 		chat_agent.set_tools(tools)
+		print(f"Updated agent with {len(tools)} MCP tools")
+		
 	finally:
 		db.close()
 
@@ -194,29 +207,71 @@ class MCPOut(MCPIn):
 
 @app.get("/scopex/mcps", response_model=List[MCPOut])
 def list_mcps(db: Session = Depends(get_db)):
-	return db.query(MCPServer).all()
+	mcps = db.query(MCPServer).all()
+	# Convert JSON strings back to objects for response
+	for mcp in mcps:
+		if mcp.args:
+			try:
+				mcp.args = json.loads(mcp.args)
+			except:
+				mcp.args = []
+		if mcp.env:
+			try:
+				mcp.env = json.loads(mcp.env)
+			except:
+				mcp.env = {}
+		if mcp.headers:
+			try:
+				mcp.headers = json.loads(mcp.headers)
+			except:
+				mcp.headers = {}
+	return mcps
 
 
 @app.post("/scopex/mcps", response_model=MCPOut)
 async def create_mcp(mcp: MCPIn, db: Session = Depends(get_db)):
-	# Convert lists and dicts to JSON strings for storage
-	mcp_data = mcp.model_dump()
-	if mcp_data.get('args'):
-		mcp_data['args'] = json.dumps(mcp_data['args'])
-	if mcp_data.get('env'):
-		mcp_data['env'] = json.dumps(mcp_data['env'])
-	if mcp_data.get('headers'):
-		mcp_data['headers'] = json.dumps(mcp_data['headers'])
-	
-	row = MCPServer(**mcp_data)
-	db.add(row)
-	db.commit()
-	db.refresh(row)
-	
-	# Reload agent tools with new MCP server
-	await update_agent_tools()
-	
-	return row
+	try:
+		# Convert lists and dicts to JSON strings for storage
+		mcp_data = mcp.model_dump()
+		if mcp_data.get('args'):
+			mcp_data['args'] = json.dumps(mcp_data['args'])
+		if mcp_data.get('env'):
+			mcp_data['env'] = json.dumps(mcp_data['env'])
+		if mcp_data.get('headers'):
+			mcp_data['headers'] = json.dumps(mcp_data['headers'])
+		
+		row = MCPServer(**mcp_data)
+		db.add(row)
+		db.commit()
+		db.refresh(row)
+		
+		# Convert JSON strings back to objects for response
+		if row.args:
+			try:
+				row.args = json.loads(row.args)
+			except:
+				row.args = []
+		if row.env:
+			try:
+				row.env = json.loads(row.env)
+			except:
+				row.env = {}
+		if row.headers:
+			try:
+				row.headers = json.loads(row.headers)
+			except:
+				row.headers = {}
+		
+		# Reload agent tools with new MCP server (don't fail if this fails)
+		try:
+			await update_agent_tools()
+		except Exception as e:
+			print(f"Warning: Failed to update agent tools: {e}")
+		
+		return row
+	except Exception as e:
+		print(f"Error creating MCP: {e}")
+		raise HTTPException(status_code=500, detail=f"Failed to create MCP: {str(e)}")
 
 
 @app.delete("/scopex/mcps/{mcp_id}")
@@ -236,49 +291,23 @@ async def delete_mcp(mcp_id: int, db: Session = Depends(get_db)):
 @app.get("/scopex/tools/available")
 async def get_available_tools():
 	"""Get list of available tools from MCP servers"""
-	db = SessionLocal()
 	try:
-		# Get all enabled MCP servers
-		mcp_servers = db.query(MCPServer).filter(MCPServer.enabled == True).all()
-		
+		# Get tools from the agent
+		agent_tools = chat_agent.tools if hasattr(chat_agent, 'tools') else []
 		available_tools = []
-		for mcp_server in mcp_servers:
-			try:
-				# Parse JSON fields
-				args = json.loads(mcp_server.args) if mcp_server.args else []
-				env = json.loads(mcp_server.env) if mcp_server.env else {}
-				headers = json.loads(mcp_server.headers) if mcp_server.headers else {}
-				
-				mcp_tools = await load_mcp_tools({
-					'transport': mcp_server.transport,
-					'url': mcp_server.url,
-					'command': mcp_server.command,
-					'args': args,
-					'env': env,
-					'headers': headers,
-					'timeout': mcp_server.timeout
-				})
-				
-				# Get tool information
-				tools_info = []
-				if hasattr(mcp_tools, 'functions'):
-					for tool_name, tool_info in mcp_tools.functions.items():
-						tools_info.append({
-							'name': tool_name,
-							'description': tool_info.get('description', ''),
-							'source': mcp_server.name
-						})
-				
-				available_tools.extend(tools_info)
-				
-			except Exception as e:
-				print(f"Failed to get tools from MCP server {mcp_server.name}: {e}")
+		
+		for tool in agent_tools:
+			if hasattr(tool, 'functions'):
+				for tool_name, tool_info in tool.functions.items():
+					available_tools.append({
+						'name': tool_name,
+						'description': tool_info.get('description', ''),
+						'source': 'MCP Tool'
+					})
 		
 		return {"tools": available_tools}
 	except Exception as e:
 		raise HTTPException(status_code=500, detail=f"Failed to get available tools: {str(e)}")
-	finally:
-		db.close()
 
 
 class ToolIn(BaseModel):
